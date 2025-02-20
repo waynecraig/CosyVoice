@@ -4,6 +4,8 @@ import logging
 from typing import Optional
 import uuid
 
+from fastapi.responses import StreamingResponse
+import numpy as np
 from pydantic import BaseModel
 import torchaudio
 logging.getLogger('matplotlib').setLevel(logging.WARNING)
@@ -66,6 +68,32 @@ async def inference_instruct2(params: Params):
     return {'result': f'{OUTPUT_URL_ROOT}/{result_file}'}   
 
 
+class StreamParams(BaseModel):
+    Text: str
+    Token: str
+    SampleRate: int
+
+
+@app.post("/wuhan_dialect")
+async def wuhan_dialect(params: StreamParams):
+    token = params.Token
+    if token != os.environ.get('TOKEN', ''):
+        return {'error': 'invalid token'}
+
+    async def generate_audio_stream():
+        for audio_chunk in cosyvoice.inference_instruct2(params.Text, "用武汉话说这句话", default_prompt_speech_16k):
+            waveform, sample_rate = audio_chunk['tts_speech'], cosyvoice.sample_rate
+            
+            # Resample if needed
+            print(f"sample_rate: {sample_rate}, params.SampleRate: {params.SampleRate}")
+            if sample_rate != params.SampleRate:
+                waveform = torchaudio.transforms.Resample(orig_freq=sample_rate, new_freq=params.SampleRate)(waveform)
+
+            tts_audio = (waveform.numpy() * (2 ** 15)).astype(np.int16).tobytes()
+            yield tts_audio
+    
+    return StreamingResponse(generate_audio_stream(), media_type="audio/mpeg")
+
 
 if __name__ == '__main__':
     port = os.environ.get('PORT', 5000)
@@ -74,4 +102,4 @@ if __name__ == '__main__':
         cosyvoice = CosyVoice2(MODEL_DIR)
     except Exception:
         raise TypeError('no valid model_type!')
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(app, host="0.0.0.0", port=int(port))
